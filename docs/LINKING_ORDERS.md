@@ -1,5 +1,12 @@
 # Linking orders to deliveries — explained simply
 
+> ⚠️ **FarmNex main app: use its guide instead of this one for the integration.**
+> The real FarmNex backend differs from what this guide assumes: it has **no vehicles table**, its
+> `DATABASE_URL` is **async** (`postgresql+asyncpg://…`, which this sync package can't use — set
+> `ROUTES_DATABASE_URL`), its ids are `public_id` UUIDs, and login alone is not enough (any logged-in
+> user could mark a load delivered). Follow **`docs/integration/route-optimizer.md` in the
+> `farmnex_main` repo** (run `/integrate route-optimizer` there). This file still explains the idea.
+
 ## The idea in one picture
 
 Think of FarmNex as a shop with two counters:

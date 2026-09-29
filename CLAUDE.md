@@ -13,6 +13,16 @@ return-trip (backhaul) matching, new-load notifications, GPS tracking with ETAs,
 It does NOT do (the main app already has these): logins, driver accounts, vehicle registration,
 orders, payments/wallet, Flutter screens.
 
+## FarmNex host facts (checked 2026-09-29 against farmnex_main)
+The main backend is **async** (`postgresql+asyncpg://` in `DATABASE_URL`), so the host always sets
+`ROUTES_DATABASE_URL`; the host installs this package pinned to a commit, mounts it at
+`/api/v2/routes` behind an allow-list + ownership guard, and passes `str(user.public_id)` for every
+user id. It has no vehicles table — `rt_vehicles` is the source of truth, filled by host endpoints
+via `upsert_vehicle`. Keep route paths and helper signatures stable (the host's guard matches on
+path parameter names like `{vehicle_id}`, `{trip_id}`, `{load_id}`, `{order_id}`,
+`{notification_id}`); if you add or rename a route, note it in the README so the host can add a
+guard rule. Full host guide: `docs/integration/route-optimizer.md` in farmnex_main.
+
 ## Hard rules
 - Only create tables prefixed `rt_`. Never alter, drop or query main-app tables.
   Keep `farmnex_routes/models.py` and `sql/001_create_route_tables.sql` in sync.
