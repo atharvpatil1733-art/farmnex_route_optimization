@@ -53,6 +53,9 @@ create table if not exists rt_loads (
 );
 create index if not exists ix_rt_loads_status on rt_loads (status);
 create index if not exists ix_rt_loads_order_id on rt_loads (order_id);
+-- One live delivery per main-app order, even if two requests race.
+create unique index if not exists ux_rt_loads_active_order on rt_loads (order_id)
+    where order_id is not null and status <> 'cancelled';
 
 create table if not exists rt_trips (
     id                 varchar(36) primary key,
@@ -113,3 +116,12 @@ create table if not exists rt_notifications (
     created_at  timestamptz not null default now()
 );
 create index if not exists ix_rt_notifications_vehicle on rt_notifications (vehicle_id, is_read);
+
+-- Keep these tables off Supabase's public REST API (anon / authenticated keys).
+-- The backend connects as the table owner, which bypasses row level security, so it keeps working.
+alter table rt_vehicles      enable row level security;
+alter table rt_loads         enable row level security;
+alter table rt_trips         enable row level security;
+alter table rt_trip_stops    enable row level security;
+alter table rt_locations     enable row level security;
+alter table rt_notifications enable row level security;

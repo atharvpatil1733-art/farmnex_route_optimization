@@ -10,7 +10,6 @@ Flutter screens stay in the main app — this package only adds the routing brai
 
 | Feature | What it does |
 |---|---|
-
 | **Vehicle copy** | The main app sends a copy of each registered vehicle (same id, capacity, current rate, home base) |
 | **Order → delivery** | One delivery per main-app order, linked by `order_id`; the main app is told when it's picked up / delivered |
 | **Load pooling** | Picks pending loads near a truck that go to the same market, fills it without exceeding capacity |
@@ -29,7 +28,7 @@ uses the same Supabase database, and only **adds** its own `rt_*` tables.
 ## Folder layout
 
 ```
-farmnex_route_optimizer/
+farmnex_route_optimization/
 ├── farmnex_routes/            <- the package (this is what the main app imports)
 │   ├── __init__.py            exports router + helper functions for the main backend
 │   ├── router.py              all API endpoints
@@ -138,13 +137,13 @@ GitHub does not watch your folder by itself - you save changes with a commit and
 with a push. One-time setup:
 
 ```bash
-# on github.com: New repository -> name: farmnex_route_optimizer -> no README -> Create
-cd farmnex_route_optimizer
+# on github.com: New repository -> name: farmnex_route_optimization -> no README -> Create
+cd farmnex_route_optimization
 git init
 git add .
 git commit -m "Route optimizer component"
 git branch -M main
-git remote add origin https://github.com/atharvpatil1733-art/farmnex_route_optimizer.git
+git remote add origin https://github.com/atharvpatil1733-art/farmnex_route_optimization.git
 git push -u origin main
 ```
 

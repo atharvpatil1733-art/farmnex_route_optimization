@@ -68,7 +68,7 @@ async function refresh() {
 
 function render(d) {
   const v = d.vehicle;
-  document.getElementById("title").textContent = `${v.vehicle_number} · ${v.driver_name}`;
+  document.getElementById("title").textContent = `${v.vehicle_number} · ${v.driver_name || "Driver"}`;
   const live = d.location.is_live ? '<span class="pill live">● Live GPS</span>' : '<span class="pill stale">Last known position</span>';
   document.getElementById("sub").innerHTML = `${live} <span class="pill">${esc(d.status.replace("_", " "))}</span>${d.is_backhaul ? ' <span class="pill">Return trip</span>' : ""}`;
 
@@ -96,7 +96,7 @@ function render(d) {
   d.stops.forEach(s => L.circleMarker([s.lat, s.lng], {
     radius: s.load_id === MY_LOAD ? 11 : 8, color: "#fff", weight: 2,
     fillColor: s.kind === "pickup" ? "#2f7d32" : "#1f5fbf", fillOpacity: s.status === "done" ? .4 : 1
-  }).bindTooltip(`${s.seq}. ${s.label}`).addTo(stopLayer));
+  }).bindTooltip(`${s.seq}. ${esc(s.label)}`).addTo(stopLayer));
   truck.setLatLng([d.location.lat, d.location.lng]).addTo(map);
 
   if (!fitted) {

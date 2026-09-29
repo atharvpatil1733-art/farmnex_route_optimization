@@ -108,6 +108,86 @@ def test_cancel_trip_and_cancel_order_delivery():
     assert client.get("/routes/orders/ORD-CANCEL/delivery").status_code == 404
 
 
+def test_cannot_cancel_trip_after_cargo_collected():
+    truck = _vehicle("veh-cancel-02", 18.52, 73.93)
+    l = _load("Beans", 200, 18.53, 73.94, MARKET, order_id="ORD-CANCEL-2")
+    trip = client.post("/routes/trips/plan", json={"vehicle_id": truck["id"], "load_ids": [l["id"]]}).json()
+    pickup = next(s for s in trip["stops"] if s["kind"] == "pickup")
+    assert client.post(f"/routes/trips/{trip['id']}/stops/{pickup['id']}/complete").status_code == 200
+    assert client.post(f"/routes/trips/{trip['id']}/cancel").status_code == 409
+    assert client.get(f"/routes/loads/{l['id']}").json()["status"] == "picked_up"
+    assert client.get(f"/routes/vehicles/{truck['id']}").json()["status"] == "on_trip"
+
+
+def test_completing_a_stop_twice_is_rejected_and_emits_once():
+    truck = _vehicle("veh-twice-01", 18.52, 73.93)
+    l = _load("Peas", 200, 18.53, 73.94, MARKET, order_id="ORD-TWICE")
+    trip = client.post("/routes/trips/plan", json={"vehicle_id": truck["id"], "load_ids": [l["id"]]}).json()
+    pickup = next(s for s in trip["stops"] if s["kind"] == "pickup")
+    assert client.post(f"/routes/trips/{trip['id']}/stops/{pickup['id']}/complete").status_code == 200
+    assert client.post(f"/routes/trips/{trip['id']}/stops/{pickup['id']}/complete").status_code == 409
+    assert events.count(("ORD-TWICE", "picked_up")) == 1
+
+
+def test_unique_index_blocks_second_live_delivery_for_an_order():
+    from sqlalchemy.exc import IntegrityError
+
+    from farmnex_routes import session_scope
+    from farmnex_routes.models import RtLoad
+
+    _load("Corn", 100, 21.14, 79.08, MARKET, order_id="ORD-IDX")
+    fields = {"farmer_name": "F", "buyer_name": "B", "crop": "Corn", "weight_kg": 100, "pickup_lat": 21.14,
+              "pickup_lng": 79.08, "pickup_address": "a", "drop_lat": 18.487, "drop_lng": 73.866, "drop_address": "d"}
+    with session_scope() as s:
+        s.add(RtLoad(order_id="ORD-IDX", **fields))
+        try:
+            s.flush()
+            raised = False
+        except IntegrityError:
+            s.rollback()
+            raised = True
+    assert raised
+
+
+def test_duplicate_order_race_returns_existing_delivery(monkeypatch):
+    """Two requests pass the 'already exists?' check together; the loser gets the winner's load."""
+    from farmnex_routes import create_delivery_for_order, hooks, session_scope
+
+    first = _load("Corn", 100, 21.14, 79.08, MARKET, order_id="ORD-RACE")
+    real_lookup = hooks.find_load_for_order
+    calls = []
+
+    def lookup_misses_once(session, order_id):
+        calls.append(order_id)
+        return None if len(calls) == 1 else real_lookup(session, order_id)
+
+    monkeypatch.setattr(hooks, "find_load_for_order", lookup_misses_once)
+    with session_scope() as s:
+        load, created = create_delivery_for_order(
+            s, order_id="ORD-RACE", farmer_name="F", buyer_name="B", crop="Corn", weight_kg=100,
+            pickup_lat=21.14, pickup_lng=79.08, pickup_address="a", drop_lat=18.487, drop_lng=73.866, drop_address="d")
+    assert not created and load.id == first["id"]
+    assert len(calls) == 2
+
+
+def test_overlong_text_is_a_422_not_a_500():
+    r = client.post("/routes/loads", json=dict(
+        farmer_name="F" * 121, buyer_name="B", crop="Corn", weight_kg=10, pickup_lat=18.5, pickup_lng=73.9,
+        pickup_address="a", **MARKET))
+    assert r.status_code == 422
+
+
+def test_cancelled_trip_has_no_etas_and_unknown_ids_404():
+    truck = _vehicle("veh-eta-01", 18.52, 73.93)
+    l = _load("Okra", 200, 18.53, 73.94, MARKET, order_id="ORD-ETA")
+    trip = client.post("/routes/trips/plan", json={"vehicle_id": truck["id"], "load_ids": [l["id"]]}).json()
+    assert client.post(f"/routes/trips/{trip['id']}/cancel").status_code == 200
+    snap = client.get(f"/routes/track/{trip['id']}").json()
+    assert snap["next_stop"] is None and all(s["eta_min"] is None for s in snap["stops"])
+    assert client.get("/routes/vehicles/nope/notifications").status_code == 404
+    assert client.get("/routes/track/nope/view").status_code == 404
+
+
 def test_python_helpers_for_main_backend():
     """What the main backend does in its own code (no web calls)."""
     from farmnex_routes import create_delivery_for_order, delivery_for_order, session_scope, upsert_vehicle

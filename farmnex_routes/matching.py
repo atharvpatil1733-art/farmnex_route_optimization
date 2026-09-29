@@ -70,6 +70,8 @@ def find_backhaul_options(session: Session, vehicle: RtVehicle, position: Point,
         loaded_km = haversine_km(pickup, drop) * rf
         drop_to_home = haversine_km(drop, home) * rf
         empty_with_load = to_pickup + drop_to_home
+        if empty_home_km - empty_with_load <= 0:
+            continue  # taking this load would not cut empty driving
         options.append(
             {
                 "load_id": l.id,

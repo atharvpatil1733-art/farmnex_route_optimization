@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .fares import load_fare
-from .geo import leg, route_geometry
+from .geo import estimate_minutes, estimate_road_km, route_geometry
 from .hooks import emit, find_load_for_order
 from .matching import notify_backhaul, select_loads_for_vehicle, vehicle_position
 from .models import RtLoad, RtLocation, RtTrip, RtTripStop, RtVehicle, utcnow
@@ -44,11 +44,14 @@ def active_trip(session: Session, vehicle_id: str) -> RtTrip | None:
 
 
 def trip_stops(session: Session, trip_id: str) -> list[RtTripStop]:
-    return list(session.scalars(select(RtTripStop).where(RtTripStop.trip_id == trip_id).order_by(RtTripStop.seq)))
+    q = select(RtTripStop).where(RtTripStop.trip_id == trip_id).order_by(RtTripStop.seq)
+    return list(session.scalars(q.execution_options(populate_existing=True)))  # always current, never a stale snapshot
 
 
 # ---------------------------------------------------------------- planning
 def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None = None, is_backhaul: bool = False) -> RtTrip:
+    # Row locks (no-op on SQLite) so two simultaneous requests can't book the same truck or load.
+    session.refresh(vehicle, with_for_update=True)
     if vehicle.status == "offline":
         raise ServiceError(409, "Vehicle is offline")
     existing = active_trip(session, vehicle.id)
@@ -57,7 +60,14 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
 
     start = vehicle_position(vehicle)
     if load_ids:
-        loads = list(session.scalars(select(RtLoad).where(RtLoad.id.in_(load_ids))))
+        loads = list(
+            session.scalars(
+                select(RtLoad)
+                .where(RtLoad.id.in_(load_ids))
+                .with_for_update()
+                .execution_options(populate_existing=True)  # never trust a stale in-session status
+            )
+        )
         missing = set(load_ids) - {l.id for l in loads}
         if missing:
             raise ServiceError(404, f"Loads not found: {sorted(missing)}")
@@ -70,6 +80,18 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
         loads = select_loads_for_vehicle(session, vehicle, start)
         if not loads:
             raise ServiceError(404, "No pending loads near this vehicle")
+        # Lock the chosen loads and make sure nobody booked them since we read them.
+        locked = list(
+            session.scalars(
+                select(RtLoad)
+                .where(RtLoad.id.in_([l.id for l in loads]))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        loads = [l for l in locked if l.status == "pending"]
+        if not loads:
+            raise ServiceError(409, "Those loads were just taken by another vehicle")
 
     specs = [
         LoadSpec(
@@ -140,10 +162,14 @@ def start_trip(session: Session, trip: RtTrip) -> RtTrip:
 
 
 def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
-    if trip.status not in ACTIVE:
-        raise ServiceError(409, f"Trip is {trip.status}")
     if stop.trip_id != trip.id:
         raise ServiceError(404, "Stop does not belong to this trip")
+    # Lock the trip first, then the stop (same order as cancel_trip): a double tap can't complete
+    # the stop twice, and a concurrent cancel can't slip in between the checks and the writes.
+    session.refresh(trip, with_for_update=True)
+    session.refresh(stop, with_for_update=True)
+    if trip.status not in ACTIVE:
+        raise ServiceError(409, f"Trip is {trip.status}")
     if stop.status == "done":
         raise ServiceError(409, "Stop already completed")
     stops = trip_stops(session, trip.id)
@@ -179,10 +205,15 @@ def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
 
 
 def cancel_trip(session: Session, trip: RtTrip) -> RtTrip:
+    session.refresh(trip, with_for_update=True)  # same trip-first lock order as complete_stop
     if trip.status not in ACTIVE:
         raise ServiceError(409, f"Trip is {trip.status}")
+    stops = trip_stops(session, trip.id)
+    if any(s.kind == "pickup" and s.status == "done" for s in stops):
+        # Produce is already on the truck: it can't simply go back to "pending".
+        raise ServiceError(409, "Cargo already collected: deliver it before ending this trip")
     freed = []
-    for s in trip_stops(session, trip.id):
+    for s in stops:
         load = session.get(RtLoad, s.load_id)
         if load.status == "assigned" and load not in freed:
             load.status, load.trip_id, load.estimated_fare = "pending", None, None
@@ -218,16 +249,23 @@ def tracking_snapshot(session: Session, trip: RtTrip) -> dict:
     stale = (not has_gps) or last_seen is None or (now - last_seen).total_seconds() > settings.gps_stale_seconds
 
     pending = [s for s in stops if s.status != "done"]
+    if trip.status not in ACTIVE:
+        pending = []  # cancelled / completed trips have no live ETAs
     etas: dict[str, float] = {}
+
+    def _first_leg_min(target) -> float:
+        # Straight-line estimate: live polls (every few seconds, position always new) must not hit OSRM.
+        return estimate_minutes(estimate_road_km(pos, target))
+
     if pending:
         if trip.status == "planned" and not trip.started_at:
             # Not started: planned offsets from now.
             base = pending[0].planned_arrival_min
-            first_leg = leg(pos, (pending[0].lat, pending[0].lng))[1]
+            first_leg = _first_leg_min((pending[0].lat, pending[0].lng))
             for s in pending:
                 etas[s.id] = first_leg + (s.planned_arrival_min - base)
         else:
-            t = leg(pos, (pending[0].lat, pending[0].lng))[1]
+            t = _first_leg_min((pending[0].lat, pending[0].lng))
             etas[pending[0].id] = t
             for prev, s in zip(pending, pending[1:]):
                 t += settings.service_minutes + s.leg_duration_min

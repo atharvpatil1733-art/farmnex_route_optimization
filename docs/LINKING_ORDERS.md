@@ -36,7 +36,7 @@ The component only adds its own `rt_...` tables.
    on FastAPI Cloud too):
 
    ```
-   farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimizer.git@main
+   farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimization.git@main
    ```
 
 2. In the main backend's `main.py` (where `app = FastAPI()` is), add:
@@ -44,6 +44,8 @@ The component only adds its own `rt_...` tables.
    ```python
    from farmnex_routes import router as routes_router
    app.include_router(routes_router, prefix="/routes")
+   # The routes have no login of their own. Protect them with the main app's auth:
+   # app.include_router(routes_router, prefix="/routes", dependencies=[Depends(your_auth_dependency)])
    ```
 
 3. Make sure the main backend has `DATABASE_URL` set to your Supabase connection string

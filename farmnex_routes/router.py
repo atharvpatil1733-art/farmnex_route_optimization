@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import services as svc
+from .config import settings
 from .db import get_session
 from .hooks import cancel_delivery_for_order, create_delivery_for_order, emit, upsert_vehicle
 from .matching import find_backhaul_options, notify_vehicles_about_new_load, vehicle_position
@@ -45,11 +46,18 @@ def _get(session, model, obj_id, name):
     return _run(svc.get_or_404, session, model, obj_id, name)
 
 
+def _tracking_url(request: Request, trip_id: str) -> str:
+    url = request.url_for("tracking_view", trip_id=trip_id)
+    if settings.public_base_url:  # behind a proxy that hides https: use the configured public origin
+        return settings.public_base_url + url.path
+    return str(url)
+
+
 def _trip_out(session: Session, trip: RtTrip, request: Request) -> TripOut:
     out = TripOut.model_validate(trip)
     out.stops = [StopOut.model_validate(s) for s in svc.trip_stops(session, trip.id)]
     out.geometry = trip.geometry
-    out.tracking_url = str(request.url_for("tracking_view", trip_id=trip.id))
+    out.tracking_url = _tracking_url(request, trip.id)
     return out
 
 
@@ -124,6 +132,7 @@ def accept_load(vehicle_id: str, load_id: str, request: Request, session: Sessio
 
 @router.get("/vehicles/{vehicle_id}/notifications", response_model=list[NotificationOut])
 def notifications(vehicle_id: str, unread_only: bool = False, session: Session = Depends(get_session)):
+    _get(session, RtVehicle, vehicle_id, "Vehicle")
     q = select(RtNotification).where(RtNotification.vehicle_id == vehicle_id).order_by(RtNotification.created_at.desc())
     if unread_only:
         q = q.where(RtNotification.is_read.is_(False))
@@ -191,7 +200,7 @@ def cancel_load(load_id: str, session: Session = Depends(get_session)):
 @router.get("/orders/{order_id}/delivery", summary="Buyer / farmer: where is my order?")
 def order_delivery(order_id: str, request: Request, session: Session = Depends(get_session)):
     info = svc.delivery_for_order(
-        session, order_id, tracking_url_for=lambda tid: str(request.url_for("tracking_view", trip_id=tid))
+        session, order_id, tracking_url_for=lambda tid: _tracking_url(request, tid)
     )
     if info is None:
         raise HTTPException(404, f"Order {order_id} has no delivery")
@@ -222,7 +231,7 @@ def track_load(load_id: str, request: Request, session: Session = Depends(get_se
         "status": load.status,
         "pickup": next((s for s in mine if s["kind"] == "pickup"), None),
         "delivery": next((s for s in mine if s["kind"] == "drop"), None),
-        "tracking_url": str(request.url_for("tracking_view", trip_id=trip.id)) + f"?load={load.id}",
+        "tracking_url": _tracking_url(request, trip.id) + f"?load={load.id}",
         "trip": snap,
     }
 
@@ -266,6 +275,9 @@ def tracking_data(trip_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/track/{trip_id}/view", name="tracking_view", response_class=HTMLResponse, summary="Live map page")
-def tracking_view(trip_id: str, request: Request):
+def tracking_view(trip_id: str, request: Request, session: Session = Depends(get_session)):
+    _get(session, RtTrip, trip_id, "Trip")
+    data_url = request.url_for("tracking_data", trip_id=trip_id)
+    data_url = settings.public_base_url + data_url.path if settings.public_base_url else str(data_url)
     html = resources.files("farmnex_routes").joinpath("static/track.html").read_text(encoding="utf-8")
-    return html.replace("__DATA_URL__", str(request.url_for("tracking_data", trip_id=trip_id)))
+    return html.replace("__DATA_URL__", data_url)
