@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FarmNex Live Tracking</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#f6f7f2; --card:#fff; --ink:#1d2a1f; --muted:#667066; --green:#2f7d32; --blue:#1f5fbf; --line:#e3e6dc; --amber:#b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121612; --card:#1b211b; --ink:#e8efe6; --muted:#9aa69a; --line:#2c352c; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { display:grid; grid-template-columns: 1fr 360px; height:100vh; }
+  #map { height:100%; }
+  aside { overflow:auto; padding:16px; border-left:1px solid var(--line); background:var(--card); }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; background:var(--line); }
+  .live { background:#d8f1d9; color:#1b5e20; } .stale { background:#ffe7c2; color:#7a4800; }
+  .eta { font-size:32px; font-weight:700; margin:12px 0 0; }
+  .card { border:1px solid var(--line); border-radius:12px; padding:12px; margin-top:12px; }
+  ol { padding-left:0; list-style:none; margin:0; }
+  li { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  li:last-child { border-bottom:0; }
+  li.done { opacity:.5; } li.mine { font-weight:600; }
+  .dot { flex:0 0 26px; height:26px; border-radius:50%; color:#fff; display:grid; place-items:center; font-size:12px; font-weight:700; }
+  .pickup { background:var(--green); } .drop { background:var(--blue); }
+  .row { display:flex; justify-content:space-between; font-size:13px; margin-top:6px; }
+  a { color:var(--blue); }
+  @media (max-width: 800px) { .wrap { grid-template-columns:1fr; grid-template-rows: 55vh auto; height:auto; } #map { height:55vh; } aside { border-left:0; border-top:1px solid var(--line); padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="map"></div>
+  <aside>
+    <h1 id="title">Loading…</h1>
+    <div class="muted" id="sub"></div>
+    <div id="summary"></div>
+    <div class="card"><strong>Stops</strong><ol id="stops"></ol></div>
+    <p class="muted">Green = collect from farmer, Blue = deliver to buyer. Updates every 5 s.</p>
+  </aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const DATA_URL = "__DATA_URL__";
+const MY_LOAD = new URLSearchParams(location.search).get("load");
+const map = L.map("map", { zoomControl: true }).setView([18.52, 73.86], 9);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "&copy; OpenStreetMap" }).addTo(map);
+const routeLine = L.polyline([], { color: "#2f7d32", weight: 5, opacity: .6 }).addTo(map);
+const trailLine = L.polyline([], { color: "#b26a00", weight: 4, dashArray: "6 6" }).addTo(map);
+const stopLayer = L.layerGroup().addTo(map);
+const truckIcon = L.divIcon({ className: "", html: '<div style="font-size:30px;line-height:30px">🚚</div>', iconSize: [30, 30], iconAnchor: [15, 15] });
+const truck = L.marker([0, 0], { icon: truckIcon, zIndexOffset: 1000 });
+let fitted = false;
+
+const fmtMin = m => m == null ? "–" : (m >= 60 ? `${Math.floor(m / 60)} h ${Math.round(m % 60)} min` : `${Math.round(m)} min`);
+const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function refresh() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+  } catch (e) { document.getElementById("sub").textContent = "Connection problem, retrying…"; }
+}
+
+function render(d) {
+  const v = d.vehicle;
+  document.getElementById("title").textContent = `${v.vehicle_number} · ${v.driver_name}`;
+  const live = d.location.is_live ? '<span class="pill live">● Live GPS</span>' : '<span class="pill stale">Last known position</span>';
+  document.getElementById("sub").innerHTML = `${live} <span class="pill">${esc(d.status.replace("_", " "))}</span>${d.is_backhaul ? ' <span class="pill">Return trip</span>' : ""}`;
+
+  const mine = MY_LOAD ? d.stops.filter(s => s.load_id === MY_LOAD && s.status !== "done") : [];
+  const focus = mine[0] || d.next_stop;
+  let html = "";
+  if (d.status === "completed") html = `<div class="eta">Delivered ✔</div>`;
+  else if (focus) html = `<div class="muted" style="margin-top:12px">${focus.kind === "pickup" ? "Arrives for pickup at" : "Arrives at"} ${esc(focus.party_name)}</div>
+      <div class="eta">${fmtMin(focus.eta_min)}</div><div class="muted">around ${fmtTime(focus.eta_at)}</div>`;
+  html += `<div class="card"><div class="row"><span>Route</span><b>${d.total_distance_km} km · ${fmtMin(d.total_duration_min)}</b></div>
+      <div class="row"><span>Driver</span><a href="tel:${esc(v.driver_phone)}">${esc(v.driver_phone)}</a></div>
+      <div class="row"><span>Vehicle</span><span>${esc(v.vehicle_type.replace("_", " "))}${v.refrigerated ? " · refrigerated" : ""}</span></div>
+      <div class="row"><span>Routing</span><span>${d.routing_source === "osrm" ? "Road network (OSRM)" : "Estimated"}</span></div></div>`;
+  document.getElementById("summary").innerHTML = html;
+
+  document.getElementById("stops").innerHTML = d.stops.map(s => `
+    <li class="${s.status === "done" ? "done" : ""} ${s.load_id === MY_LOAD ? "mine" : ""}">
+      <span class="dot ${s.kind}">${s.seq}</span>
+      <span>${esc(s.label)}<br><span class="muted">${s.status === "done" ? "Done " + fmtTime(s.done_at) : "ETA " + fmtMin(s.eta_min)}</span></span>
+    </li>`).join("");
+
+  routeLine.setLatLngs(d.geometry);
+  trailLine.setLatLngs(d.trail);
+  stopLayer.clearLayers();
+  d.stops.forEach(s => L.circleMarker([s.lat, s.lng], {
+    radius: s.load_id === MY_LOAD ? 11 : 8, color: "#fff", weight: 2,
+    fillColor: s.kind === "pickup" ? "#2f7d32" : "#1f5fbf", fillOpacity: s.status === "done" ? .4 : 1
+  }).bindTooltip(`${s.seq}. ${s.label}`).addTo(stopLayer));
+  truck.setLatLng([d.location.lat, d.location.lng]).addTo(map);
+
+  if (!fitted) {
+    const pts = d.geometry.length ? d.geometry : d.stops.map(s => [s.lat, s.lng]);
+    map.fitBounds(L.latLngBounds([...pts, [d.location.lat, d.location.lng]]), { padding: [30, 30] });
+    fitted = true;
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
