@@ -91,11 +91,12 @@ def create_delivery_for_order(
         needs_cold=needs_cold, priority=priority, pickup_lat=pickup_lat, pickup_lng=pickup_lng,
         pickup_address=pickup_address, drop_lat=drop_lat, drop_lng=drop_lng, drop_address=drop_address,
     )
-    session.add(load)
     try:
-        session.flush()
+        # Savepoint: on a duplicate only this insert is undone, not the caller's other pending work.
+        with session.begin_nested():
+            session.add(load)
+            session.flush()
     except IntegrityError:  # a parallel request created this order's delivery first
-        session.rollback()
         existing = find_load_for_order(session, order_id)
         if existing is None:
             raise

@@ -129,18 +129,17 @@ def test_completing_a_stop_twice_is_rejected_and_emits_once():
     assert events.count(("ORD-TWICE", "picked_up")) == 1
 
 
-def test_duplicate_order_race_returns_existing_delivery():
-    """The unique index stops a second live delivery even if the 'already exists?' check was skipped."""
+def test_unique_index_blocks_second_live_delivery_for_an_order():
     from sqlalchemy.exc import IntegrityError
 
     from farmnex_routes import session_scope
     from farmnex_routes.models import RtLoad
 
-    first = _load("Corn", 100, 21.14, 79.08, MARKET, order_id="ORD-RACE")
-    fields = dict(farmer_name="F", buyer_name="B", crop="Corn", weight_kg=100, pickup_lat=21.14, pickup_lng=79.08,
-                  pickup_address="a", drop_lat=18.487, drop_lng=73.866, drop_address="d")
+    _load("Corn", 100, 21.14, 79.08, MARKET, order_id="ORD-IDX")
+    fields = {"farmer_name": "F", "buyer_name": "B", "crop": "Corn", "weight_kg": 100, "pickup_lat": 21.14,
+              "pickup_lng": 79.08, "pickup_address": "a", "drop_lat": 18.487, "drop_lng": 73.866, "drop_address": "d"}
     with session_scope() as s:
-        s.add(RtLoad(order_id="ORD-RACE", **fields))
+        s.add(RtLoad(order_id="ORD-IDX", **fields))
         try:
             s.flush()
             raised = False
@@ -148,7 +147,27 @@ def test_duplicate_order_race_returns_existing_delivery():
             s.rollback()
             raised = True
     assert raised
-    assert first["id"]
+
+
+def test_duplicate_order_race_returns_existing_delivery(monkeypatch):
+    """Two requests pass the 'already exists?' check together; the loser gets the winner's load."""
+    from farmnex_routes import create_delivery_for_order, hooks, session_scope
+
+    first = _load("Corn", 100, 21.14, 79.08, MARKET, order_id="ORD-RACE")
+    real_lookup = hooks.find_load_for_order
+    calls = []
+
+    def lookup_misses_once(session, order_id):
+        calls.append(order_id)
+        return None if len(calls) == 1 else real_lookup(session, order_id)
+
+    monkeypatch.setattr(hooks, "find_load_for_order", lookup_misses_once)
+    with session_scope() as s:
+        load, created = create_delivery_for_order(
+            s, order_id="ORD-RACE", farmer_name="F", buyer_name="B", crop="Corn", weight_kg=100,
+            pickup_lat=21.14, pickup_lng=79.08, pickup_address="a", drop_lat=18.487, drop_lng=73.866, drop_address="d")
+    assert not created and load.id == first["id"]
+    assert len(calls) == 2
 
 
 def test_overlong_text_is_a_422_not_a_500():

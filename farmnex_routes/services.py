@@ -44,7 +44,8 @@ def active_trip(session: Session, vehicle_id: str) -> RtTrip | None:
 
 
 def trip_stops(session: Session, trip_id: str) -> list[RtTripStop]:
-    return list(session.scalars(select(RtTripStop).where(RtTripStop.trip_id == trip_id).order_by(RtTripStop.seq)))
+    q = select(RtTripStop).where(RtTripStop.trip_id == trip_id).order_by(RtTripStop.seq)
+    return list(session.scalars(q.execution_options(populate_existing=True)))  # always current, never a stale snapshot
 
 
 # ---------------------------------------------------------------- planning
@@ -59,7 +60,14 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
 
     start = vehicle_position(vehicle)
     if load_ids:
-        loads = list(session.scalars(select(RtLoad).where(RtLoad.id.in_(load_ids)).with_for_update()))
+        loads = list(
+            session.scalars(
+                select(RtLoad)
+                .where(RtLoad.id.in_(load_ids))
+                .with_for_update()
+                .execution_options(populate_existing=True)  # never trust a stale in-session status
+            )
+        )
         missing = set(load_ids) - {l.id for l in loads}
         if missing:
             raise ServiceError(404, f"Loads not found: {sorted(missing)}")
@@ -73,9 +81,14 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
         if not loads:
             raise ServiceError(404, "No pending loads near this vehicle")
         # Lock the chosen loads and make sure nobody booked them since we read them.
-        locked = list(session.scalars(select(RtLoad).where(RtLoad.id.in_([l.id for l in loads])).with_for_update()))
-        for l in locked:
-            session.refresh(l)
+        locked = list(
+            session.scalars(
+                select(RtLoad)
+                .where(RtLoad.id.in_([l.id for l in loads]))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
         loads = [l for l in locked if l.status == "pending"]
         if not loads:
             raise ServiceError(409, "Those loads were just taken by another vehicle")
@@ -149,12 +162,14 @@ def start_trip(session: Session, trip: RtTrip) -> RtTrip:
 
 
 def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
-    if trip.status not in ACTIVE:
-        raise ServiceError(409, f"Trip is {trip.status}")
     if stop.trip_id != trip.id:
         raise ServiceError(404, "Stop does not belong to this trip")
-    # Lock + re-read so a double tap can't complete the stop (and emit the event) twice.
+    # Lock the trip first, then the stop (same order as cancel_trip): a double tap can't complete
+    # the stop twice, and a concurrent cancel can't slip in between the checks and the writes.
+    session.refresh(trip, with_for_update=True)
     session.refresh(stop, with_for_update=True)
+    if trip.status not in ACTIVE:
+        raise ServiceError(409, f"Trip is {trip.status}")
     if stop.status == "done":
         raise ServiceError(409, "Stop already completed")
     stops = trip_stops(session, trip.id)
@@ -190,6 +205,7 @@ def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
 
 
 def cancel_trip(session: Session, trip: RtTrip) -> RtTrip:
+    session.refresh(trip, with_for_update=True)  # same trip-first lock order as complete_stop
     if trip.status not in ACTIVE:
         raise ServiceError(409, f"Trip is {trip.status}")
     stops = trip_stops(session, trip.id)
