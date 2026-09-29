@@ -20,10 +20,10 @@ class VehicleSync(BaseModel):
     rate_per_ton_km: float | None = Field(None, gt=0, description="Vehicle's current rate, Rs per tonne per km")
     base_lat: float = Lat
     base_lng: float = Lng
-    base_label: str | None = None
-    driver_user_id: str | None = None
-    driver_name: str | None = None
-    driver_phone: str | None = None
+    base_label: str | None = Field(None, max_length=200)
+    driver_user_id: str | None = Field(None, max_length=64)
+    driver_name: str | None = Field(None, max_length=120)
+    driver_phone: str | None = Field(None, max_length=20)
     owner_role: Literal["transporter", "farmer"] = "transporter"
 
 
@@ -53,23 +53,23 @@ class VehicleStatusUpdate(BaseModel):
 
 
 class LoadCreate(BaseModel):
-    order_id: str | None = None
-    farmer_id: str | None = None
-    farmer_name: str
-    farmer_phone: str | None = None
-    buyer_id: str | None = None
-    buyer_name: str
-    buyer_phone: str | None = None
-    crop: str
+    order_id: str | None = Field(None, max_length=64)
+    farmer_id: str | None = Field(None, max_length=64)
+    farmer_name: str = Field(max_length=120)
+    farmer_phone: str | None = Field(None, max_length=20)
+    buyer_id: str | None = Field(None, max_length=64)
+    buyer_name: str = Field(max_length=120)
+    buyer_phone: str | None = Field(None, max_length=20)
+    crop: str = Field(max_length=60)
     weight_kg: float = Field(gt=0)
     needs_cold: bool = False
     priority: int = Field(0, ge=0, le=2, description="0 normal, 1 urgent, 2 Crop Rescue")
     pickup_lat: float = Lat
     pickup_lng: float = Lng
-    pickup_address: str
+    pickup_address: str = Field(max_length=255)
     drop_lat: float = Lat
     drop_lng: float = Lng
-    drop_address: str
+    drop_address: str = Field(max_length=255)
 
 
 class LoadOut(LoadCreate):
@@ -87,9 +87,9 @@ class LoadCreated(LoadOut):
 
 
 class PlanTripRequest(BaseModel):
-    vehicle_id: str
+    vehicle_id: str = Field(max_length=64)
     load_ids: list[str] | None = Field(
-        None, description="Leave empty to let the optimizer pool nearby pending loads automatically"
+        None, max_length=20, description="Leave empty to let the optimizer pool nearby pending loads automatically"
     )
 
 

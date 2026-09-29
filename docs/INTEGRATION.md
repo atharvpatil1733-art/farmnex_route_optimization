@@ -7,13 +7,24 @@ This page only has the extra technical details.
 
 ```python
 # requirements.txt of the main backend (repo is public, so FastAPI Cloud can install it)
-farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimizer.git@main
+farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimization.git@main
 ```
 
 ```python
 from farmnex_routes import router as routes_router
 app.include_router(routes_router, prefix="/routes")
 ```
+
+**Security:** the router has no authentication of its own (the main app owns logins). Anyone who can
+reach `/routes` can see driver phones and live locations and mark stops delivered, which can release
+payments. Mount it behind the main app's auth:
+`app.include_router(routes_router, prefix="/routes", dependencies=[Depends(your_auth_dependency)])`.
+The live-map page (`/track/{trip_id}/view`) and its JSON are opened from a WebView, so allow them
+through your auth, or pass the token in the WebView headers.
+
+**HTTPS links:** behind a proxy that terminates TLS, run uvicorn with
+`--proxy-headers --forwarded-allow-ips="*"`, or set `ROUTES_PUBLIC_BASE_URL=https://your-backend`
+so `tracking_url` is always `https://...` (Android WebViews block plain `http`).
 
 ## Database
 

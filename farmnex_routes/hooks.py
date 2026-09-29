@@ -21,6 +21,7 @@ import logging
 from typing import Callable
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .matching import notify_vehicles_about_new_load
@@ -36,7 +37,8 @@ _listeners: list[Callable[[RtLoad, str], None]] = []
 def on_delivery_update(fn: Callable[[RtLoad, str], None]) -> Callable[[RtLoad, str], None]:
     """Register a function called as fn(load, new_status) after every status change.
 
-    new_status is one of: assigned, picked_up, delivered, cancelled.
+    new_status is one of: assigned, picked_up, delivered, cancelled, pending
+    ("pending" = the trip was cancelled and the load is waiting for a truck again).
     load.order_id tells you which order it belongs to. Can be used as a decorator.
     """
     _listeners.append(fn)
@@ -90,7 +92,14 @@ def create_delivery_for_order(
         pickup_address=pickup_address, drop_lat=drop_lat, drop_lng=drop_lng, drop_address=drop_address,
     )
     session.add(load)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:  # a parallel request created this order's delivery first
+        session.rollback()
+        existing = find_load_for_order(session, order_id)
+        if existing is None:
+            raise
+        return existing, False
     notify_vehicles_about_new_load(session, load)  # free trucks nearby get an alert
     session.commit()
     return load, True

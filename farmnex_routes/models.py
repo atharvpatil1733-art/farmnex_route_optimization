@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -76,7 +76,17 @@ class RtLoad(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (Index("ix_rt_loads_status", "status"),)
+    __table_args__ = (
+        Index("ix_rt_loads_status", "status"),
+        # One live delivery per main-app order, even if two requests race.
+        Index(
+            "ux_rt_loads_active_order",
+            "order_id",
+            unique=True,
+            postgresql_where=text("order_id is not null and status <> 'cancelled'"),
+            sqlite_where=text("order_id is not null and status <> 'cancelled'"),
+        ),
+    )
 
 
 class RtTrip(Base):

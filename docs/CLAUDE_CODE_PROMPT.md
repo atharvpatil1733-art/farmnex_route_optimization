@@ -6,7 +6,7 @@ Open Claude Code **in the main FarmNex backend repo** and paste everything below
 
 I want to integrate my route-optimization component into this FastAPI backend.
 The component is a Python package in my public repo
-https://github.com/atharvpatil1733-art/farmnex_route_optimizer (package name `farmnex_routes`).
+https://github.com/atharvpatil1733-art/farmnex_route_optimization (package name `farmnex_routes`).
 Read its `docs/LINKING_ORDERS.md` and `CLAUDE.md` first.
 
 Rules:
@@ -16,7 +16,7 @@ Rules:
 - Show me the plan and the exact files you will touch before editing.
 
 Tasks:
-1. Add `farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimizer.git@main`
+1. Add `farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimization.git@main`
    to requirements and mount it: `app.include_router(routes_router, prefix="/routes")`.
 2. Find where a driver registers or edits a vehicle. After it saves, call
    `upsert_vehicle(...)` with the main app's vehicle id, number, type (map ours to one of

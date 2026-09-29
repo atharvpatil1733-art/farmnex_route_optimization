@@ -103,19 +103,26 @@ def route_geometry(points: Sequence[Point]):
 
 
 @lru_cache(maxsize=1024)
+def _osrm_leg_cached(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> tuple[float, float]:
+    """Only successful OSRM answers are cached (exceptions are never stored by lru_cache)."""
+    a, b = (a_lat, a_lng), (b_lat, b_lng)
+    r = httpx.get(
+        f"{settings.osrm_url}/route/v1/driving/{_coords([a, b])}",
+        params={"overview": "false"},
+        timeout=settings.http_timeout_s,
+    )
+    data = r.json()
+    if data.get("code") != "Ok":
+        raise ValueError(f"OSRM code {data.get('code')}")
+    route = data["routes"][0]
+    return route["distance"] / 1000, route["duration"] / 60 * settings.truck_time_factor
+
+
 def _leg_cached(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> tuple[float, float]:
     a, b = (a_lat, a_lng), (b_lat, b_lng)
     if _use_osrm():
         try:
-            r = httpx.get(
-                f"{settings.osrm_url}/route/v1/driving/{_coords([a, b])}",
-                params={"overview": "false"},
-                timeout=settings.http_timeout_s,
-            )
-            data = r.json()
-            if data.get("code") == "Ok":
-                route = data["routes"][0]
-                return route["distance"] / 1000, route["duration"] / 60 * settings.truck_time_factor
+            return _osrm_leg_cached(a_lat, a_lng, b_lat, b_lng)
         except Exception as exc:
             log.warning("OSRM leg failed (%s), using estimate", exc)
     km = estimate_road_km(a, b)

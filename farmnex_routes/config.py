@@ -50,6 +50,9 @@ class Settings:
 
     # Tracking.
     gps_stale_seconds: int
+    # Optional, e.g. https://api.farmnex.app : used to build tracking links when the app sits
+    # behind a proxy that hides https. Empty = derive from the incoming request.
+    public_base_url: str = ""
 
     # Fares. The main app sends each vehicle's CURRENT rate (Rs per tonne per km) when it
     # syncs the vehicle. These defaults are only used if it doesn't.
@@ -79,6 +82,7 @@ class Settings:
             exact_max_stops=_int("EXACT_MAX_STOPS", 10),
             priority_weight=_float("PRIORITY_WEIGHT", 0.15),
             gps_stale_seconds=_int("GPS_STALE_SECONDS", 120),
+            public_base_url=os.getenv("ROUTES_PUBLIC_BASE_URL", "").strip().rstrip("/"),
             default_rate_per_ton_km={
                 "pickup": _float("DEFAULT_RATE_PICKUP", 12),
                 "tempo": _float("DEFAULT_RATE_TEMPO", 10),
