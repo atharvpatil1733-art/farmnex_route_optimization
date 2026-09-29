@@ -4,15 +4,16 @@
 -- (The package can also create these itself on first request when ROUTES_AUTO_CREATE_TABLES=true.)
 
 create table if not exists rt_vehicles (
-    id              varchar(36) primary key,
+    id              varchar(64) primary key,   -- same id as the vehicle in the main app
     driver_user_id  varchar(64),
-    driver_name     varchar(120) not null,
-    driver_phone    varchar(20)  not null,
+    driver_name     varchar(120),
+    driver_phone    varchar(20),
     owner_role      varchar(20)  not null default 'transporter',
-    vehicle_number  varchar(20)  not null unique,
+    vehicle_number  varchar(20)  not null,
     vehicle_type    varchar(20)  not null default 'tempo',
     capacity_kg     double precision not null,
     refrigerated    boolean not null default false,
+    rate_per_ton_km double precision,          -- current rate, sent by the main app
     base_lat        double precision not null,
     base_lng        double precision not null,
     base_label      varchar(200),
@@ -20,8 +21,10 @@ create table if not exists rt_vehicles (
     last_lat        double precision,
     last_lng        double precision,
     last_seen_at    timestamptz,
-    created_at      timestamptz not null default now()
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now()
 );
+create index if not exists ix_rt_vehicles_driver_user_id on rt_vehicles (driver_user_id);
 
 create table if not exists rt_loads (
     id              varchar(36) primary key,
@@ -43,14 +46,17 @@ create table if not exists rt_loads (
     drop_lng        double precision not null,
     drop_address    varchar(255) not null,
     status          varchar(20) not null default 'pending',
+    estimated_fare  double precision,
     trip_id         varchar(36),
-    created_at      timestamptz not null default now()
+    created_at      timestamptz not null default now(),
+    delivered_at    timestamptz
 );
 create index if not exists ix_rt_loads_status on rt_loads (status);
+create index if not exists ix_rt_loads_order_id on rt_loads (order_id);
 
 create table if not exists rt_trips (
     id                 varchar(36) primary key,
-    vehicle_id         varchar(36) not null references rt_vehicles (id),
+    vehicle_id         varchar(64) not null references rt_vehicles (id),
     status             varchar(20) not null default 'planned',
     is_backhaul        boolean not null default false,
     total_distance_km  double precision not null default 0,
@@ -85,7 +91,7 @@ create index if not exists ix_rt_trip_stops_trip on rt_trip_stops (trip_id, seq)
 
 create table if not exists rt_locations (
     id           serial primary key,
-    vehicle_id   varchar(36) not null references rt_vehicles (id),
+    vehicle_id   varchar(64) not null references rt_vehicles (id),
     trip_id      varchar(36),
     lat          double precision not null,
     lng          double precision not null,
@@ -97,7 +103,7 @@ create index if not exists ix_rt_locations_vehicle_time on rt_locations (vehicle
 
 create table if not exists rt_notifications (
     id          varchar(36) primary key,
-    vehicle_id  varchar(36) not null references rt_vehicles (id),
+    vehicle_id  varchar(64) not null references rt_vehicles (id),
     kind        varchar(30) not null,
     load_id     varchar(36),
     title       varchar(200) not null,

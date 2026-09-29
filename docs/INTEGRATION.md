@@ -1,128 +1,73 @@
-# Plugging the route optimizer into FarmNex
+# Technical integration notes
 
-## 1. Main FastAPI backend
+For the step-by-step, plain-language guide, read **[LINKING_ORDERS.md](LINKING_ORDERS.md)** first.
+This page only has the extra technical details.
 
-**Option A - install from GitHub (recommended).** Add to the main backend's `requirements.txt`:
+## Mounting
 
-```
+```python
+# requirements.txt of the main backend (repo is public, so FastAPI Cloud can install it)
 farmnex-route-optimizer @ git+https://github.com/atharvpatil1733-art/farmnex_route_optimizer.git@main
 ```
 
-(If the repo is private, FastAPI Cloud can't install it this way - either make it public or use Option B.)
-
-**Option B - copy the folder.** Copy `farmnex_routes/` into the main backend next to `main.py`
-and add `sqlalchemy`, `httpx`, `psycopg[binary]` to its requirements.
-
-Then in the main app:
-
 ```python
 from farmnex_routes import router as routes_router
-
 app.include_router(routes_router, prefix="/routes")
 ```
 
-That's it. The component reads `DATABASE_URL` (the same Supabase string the main backend
-uses). To use a separate DB for testing, set `ROUTES_DATABASE_URL` instead.
+## Database
 
-### Database
-Tables are created automatically on first request (`ROUTES_AUTO_CREATE_TABLES=true`), using
-`CREATE TABLE IF NOT EXISTS` for `rt_*` tables only. If you prefer to do it by hand, run
-`sql/001_create_route_tables.sql` in the Supabase SQL editor and set the flag to `false`.
-Nothing existing is altered or dropped.
+- Uses `DATABASE_URL` (same Supabase string as the main backend). Set `ROUTES_DATABASE_URL`
+  to point the component at a separate test database instead.
+- `rt_*` tables are created on first use (`CREATE TABLE IF NOT EXISTS`). To create them by hand,
+  run `sql/001_create_route_tables.sql` in the Supabase SQL editor and set
+  `ROUTES_AUTO_CREATE_TABLES=false`.
+- Existing FarmNex tables are never read, altered or dropped. The only link to them is by id
+  values stored in text columns (`order_id`, `farmer_id`, `buyer_id`, `driver_user_id`, and
+  `rt_vehicles.id` = main app vehicle id).
 
-If the main backend already has its own SQLAlchemy session dependency, you can make this
-component use it:
+## What the component owns vs. the main app
+
+| Main app (already built) | This component |
+|---|---|
+| Logins, driver accounts, vehicle registration | Copy of each vehicle (`upsert_vehicle` / `PUT /routes/vehicles/{id}`) |
+| Orders, checkout, Pre-Bidding, Crop Rescue sales | One delivery ("load") per order that needs transport |
+| Wallet, payment release, notifications to users | Calls your `@on_delivery_update` function on every status change |
+| Flutter screens (driver, buyer, farmer) | JSON endpoints + a live map page (`tracking_url`) to open in a WebView |
+| Vehicle rates | Uses the rate you send to compute each farmer's fare |
+
+## Python helpers (call from main backend code, no HTTP needed)
 
 ```python
-from farmnex_routes import get_session as routes_get_session
-app.dependency_overrides[routes_get_session] = main_app_get_db
+from farmnex_routes import (
+    session_scope,               # with session_scope() as s: ...
+    upsert_vehicle,              # upsert_vehicle(s, vehicle_id, **fields)
+    create_delivery_for_order,   # -> (load, created_now); idempotent per order_id
+    cancel_delivery_for_order,   # only while status is "pending"
+    delivery_for_order,          # dict: status, fare, pickup/delivery ETA, vehicle
+    on_delivery_update,          # decorator: fn(load, status)
+)
 ```
 
-(With this override, also call `farmnex_routes.init_db()` once at startup, or run the SQL file.)
+Delivery statuses: `pending` → `assigned` → `picked_up` → `delivered`, or `cancelled`.
+If a trip is cancelled, its loads go back to `pending` (your listener gets `"pending"`).
 
-### Hook: create a load when an order needs transport
-When checkout/pre-bidding confirms an order and the farmer picks "platform transport":
+Listener notes: it runs inside the request that changed the status, after the change is
+saved. Keep it quick. Exceptions are logged, never raised.
 
-```python
-import httpx  # or call the function directly - both work
+## Same thing over HTTP (if another service needs it)
 
-httpx.post(f"{BASE}/routes/loads", json={
-    "order_id": order.id,
-    "farmer_id": farmer.id, "farmer_name": farmer.name, "farmer_phone": farmer.phone,
-    "buyer_id": buyer.id,   "buyer_name": buyer.name,   "buyer_phone": buyer.phone,
-    "crop": "Tomato", "weight_kg": 800,
-    "priority": 2 if order.from_crop_rescue else 0,
-    "needs_cold": False,
-    "pickup_lat": farm.lat, "pickup_lng": farm.lng, "pickup_address": farm.address,
-    "drop_lat": buyer.lat,  "drop_lng": buyer.lng,  "drop_address": buyer.address,
-})
-```
+| Method | Path |
+|---|---|
+| PUT | `/routes/vehicles/{main_app_vehicle_id}` |
+| POST | `/routes/loads` (with `order_id`) |
+| GET | `/routes/orders/{order_id}/delivery` |
+| POST | `/routes/orders/{order_id}/cancel-delivery` |
 
-Farmer self-delivery: register the farmer's own vehicle with `"owner_role": "farmer"`, then
-`POST /routes/trips/plan {"vehicle_id": ..., "load_ids": [load_id]}` - GPS tracking works the same.
+## Demo day
 
-## 2. Flutter app
-
-Packages: `http`, `geolocator` (driver GPS), `webview_flutter` (tracking map) or
-`flutter_map` + `latlong2` if you want a native map.
-
-### Driver: register vehicle
-
-```dart
-final r = await http.post(Uri.parse('$api/routes/vehicles'),
-  headers: {'Content-Type': 'application/json'},
-  body: jsonEncode({
-    'driver_name': name, 'driver_phone': phone, 'vehicle_number': number,
-    'vehicle_type': 'mini_truck', 'capacity_kg': 2500, 'refrigerated': false,
-    'base_lat': pos.latitude, 'base_lng': pos.longitude, 'base_label': 'Chakan',
-  }));
-final vehicleId = jsonDecode(r.body)['id'];   // save locally
-```
-
-### Driver: send GPS every 10 seconds while a trip is active
-
-```dart
-Timer? gpsTimer;
-void startGps(String vehicleId) {
-  gpsTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
-    final p = await Geolocator.getCurrentPosition();
-    await http.post(Uri.parse('$api/routes/vehicles/$vehicleId/location'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'lat': p.latitude, 'lng': p.longitude,
-                        'speed_kmph': p.speed * 3.6, 'heading': p.heading}));
-  });
-}
-void stopGps() => gpsTimer?.cancel();
-```
-
-Android: add `ACCESS_FINE_LOCATION` to `AndroidManifest.xml` and ask permission with
-`Geolocator.requestPermission()`. For the demo the app must stay open (background location is
-out of scope for the prototype).
-
-### Driver: route screen
-`GET /routes/vehicles/{id}/current-trip` -> list `stops` (seq, label, `planned_arrival_min`)
-with a "Done" button calling `POST /routes/trips/{trip_id}/stops/{stop_id}/complete`.
-If the response has `trip_status == "completed"` and `backhaul_options` is not empty, show a
-"Return load available" sheet with an Accept button ->
-`POST /routes/vehicles/{id}/accept-load/{load_id}`.
-
-### Driver: notifications
-Poll `GET /routes/vehicles/{id}/notifications?unread_only=true` every 30 s and show a banner.
-
-### Farmer / buyer: track my load
-`GET /routes/loads/{load_id}/track` returns `pickup.eta_min`, `delivery.eta_min` and a
-`tracking_url`. The simplest screen is a WebView:
-
-```dart
-WebViewWidget(controller: WebViewController()
-  ..setJavaScriptMode(JavaScriptMode.unrestricted)
-  ..loadRequest(Uri.parse(trackingUrl)));
-```
-
-## 3. Demo-day checklist
-- Backend must be reachable from phones (FastAPI Cloud URL, not `localhost`).
-- Seed data once: `python demo/seed_demo.py --base-url https://<backend>/routes`.
-- If no one is actually driving, run `demo/simulate_driver.py <trip_id> --base-url ...`
-  on a laptop so judges see the truck move.
-- Public OSRM is free but shared; if it's slow the app automatically falls back to estimates
-  (the map page shows "Estimated").
+- Phones must reach the backend (FastAPI Cloud URL, not `localhost`).
+- Seed once: `python demo/seed_demo.py --base-url https://<backend>/routes`.
+- No one driving? Run `python demo/simulate_driver.py <trip_id> --base-url ...` on a laptop.
+- The public OSRM routing server is free but shared; if it's slow the component falls back to
+  estimates automatically (the map shows "Estimated").

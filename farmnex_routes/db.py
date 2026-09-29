@@ -6,6 +6,7 @@ main FarmNex database.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Iterator
 
 from sqlalchemy import create_engine
@@ -68,3 +69,13 @@ def get_session() -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """For calling the helper functions from the main backend's own code:
+
+        with session_scope() as s:
+            create_delivery_for_order(s, order_id=..., ...)
+    """
+    yield from get_session()

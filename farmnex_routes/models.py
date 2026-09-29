@@ -20,17 +20,21 @@ def utcnow() -> datetime:
 
 
 class RtVehicle(Base):
+    """A copy of the vehicle registered in the MAIN app (same id). The main app keeps
+    it up to date by calling PUT /vehicles/{id} - this component never registers vehicles."""
+
     __tablename__ = "rt_vehicles"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    driver_user_id: Mapped[str | None] = mapped_column(String(64))  # main app user id, if any
-    driver_name: Mapped[str] = mapped_column(String(120))
-    driver_phone: Mapped[str] = mapped_column(String(20))
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # = main app's vehicle id
+    driver_user_id: Mapped[str | None] = mapped_column(String(64), index=True)  # main app driver login id
+    driver_name: Mapped[str | None] = mapped_column(String(120))
+    driver_phone: Mapped[str | None] = mapped_column(String(20))
     owner_role: Mapped[str] = mapped_column(String(20), default="transporter")  # transporter | farmer
-    vehicle_number: Mapped[str] = mapped_column(String(20), unique=True)
+    vehicle_number: Mapped[str] = mapped_column(String(20))
     vehicle_type: Mapped[str] = mapped_column(String(20), default="tempo")  # pickup|tempo|mini_truck|truck
     capacity_kg: Mapped[float] = mapped_column(Float)
     refrigerated: Mapped[bool] = mapped_column(Boolean, default=False)
+    rate_per_ton_km: Mapped[float | None] = mapped_column(Float)  # current rate, sent by the main app
     base_lat: Mapped[float] = mapped_column(Float)
     base_lng: Mapped[float] = mapped_column(Float)
     base_label: Mapped[str | None] = mapped_column(String(200))
@@ -39,6 +43,7 @@ class RtVehicle(Base):
     last_lng: Mapped[float | None] = mapped_column(Float)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class RtLoad(Base):
@@ -47,7 +52,7 @@ class RtLoad(Base):
     __tablename__ = "rt_loads"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    order_id: Mapped[str | None] = mapped_column(String(64))  # link to the main app's order
+    order_id: Mapped[str | None] = mapped_column(String(64), index=True)  # the main app's order id
     farmer_id: Mapped[str | None] = mapped_column(String(64))
     farmer_name: Mapped[str] = mapped_column(String(120))
     farmer_phone: Mapped[str | None] = mapped_column(String(20))
@@ -66,8 +71,10 @@ class RtLoad(Base):
     drop_address: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     # pending | assigned | picked_up | delivered | cancelled
+    estimated_fare: Mapped[float | None] = mapped_column(Float)  # this farmer's share, set when planned
     trip_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_rt_loads_status", "status"),)
 
@@ -76,7 +83,7 @@ class RtTrip(Base):
     __tablename__ = "rt_trips"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    vehicle_id: Mapped[str] = mapped_column(String(36), ForeignKey("rt_vehicles.id"))
+    vehicle_id: Mapped[str] = mapped_column(String(64), ForeignKey("rt_vehicles.id"))
     status: Mapped[str] = mapped_column(String(20), default="planned")
     # planned | in_progress | completed | cancelled
     is_backhaul: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -120,7 +127,7 @@ class RtLocation(Base):
     __tablename__ = "rt_locations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    vehicle_id: Mapped[str] = mapped_column(String(36), ForeignKey("rt_vehicles.id"))
+    vehicle_id: Mapped[str] = mapped_column(String(64), ForeignKey("rt_vehicles.id"))
     trip_id: Mapped[str | None] = mapped_column(String(36))
     lat: Mapped[float] = mapped_column(Float)
     lng: Mapped[float] = mapped_column(Float)
@@ -135,7 +142,7 @@ class RtNotification(Base):
     __tablename__ = "rt_notifications"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    vehicle_id: Mapped[str] = mapped_column(String(36), ForeignKey("rt_vehicles.id"))
+    vehicle_id: Mapped[str] = mapped_column(String(64), ForeignKey("rt_vehicles.id"))
     kind: Mapped[str] = mapped_column(String(30))  # backhaul | new_load_nearby
     load_id: Mapped[str | None] = mapped_column(String(36))
     title: Mapped[str] = mapped_column(String(200))

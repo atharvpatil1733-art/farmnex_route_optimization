@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .fares import load_fare
 from .geo import Point, haversine_km
 from .models import RtLoad, RtNotification, RtVehicle
 
@@ -59,7 +60,6 @@ def find_backhaul_options(session: Session, vehicle: RtVehicle, position: Point,
     home = (vehicle.base_lat, vehicle.base_lng)
     rf = settings.road_factor
     empty_home_km = haversine_km(position, home) * rf
-    rate = settings.rate_for(vehicle.vehicle_type, vehicle.refrigerated)
 
     options = []
     for l in _compatible_pending_loads(session, vehicle):
@@ -85,7 +85,7 @@ def find_backhaul_options(session: Session, vehicle: RtVehicle, position: Point,
                 "empty_km_without": round(empty_home_km, 1),
                 "empty_km_with": round(empty_with_load, 1),
                 "empty_km_saved": round(empty_home_km - empty_with_load, 1),
-                "estimated_earning": round(loaded_km * rate),
+                "estimated_earning": load_fare(vehicle, loaded_km, l.weight_kg),
             }
         )
     options.sort(key=lambda o: (-o["empty_km_saved"], -o["estimated_earning"]))
@@ -105,7 +105,7 @@ def notify_backhaul(session: Session, vehicle: RtVehicle, position: Point) -> li
                 message=(
                     f"Best: {top['weight_kg']:.0f} kg {top['crop']} from {top['pickup_address']} "
                     f"to {top['drop_address']} ({top['distance_to_pickup_km']} km away). "
-                    f"Saves ~{top['empty_km_saved']} empty km, earn ~Rs {top['estimated_earning']}."
+                    f"Saves ~{top['empty_km_saved']} empty km, earn ~Rs {top['estimated_earning']:.0f}."
                 ),
                 payload={"options": options},
             )

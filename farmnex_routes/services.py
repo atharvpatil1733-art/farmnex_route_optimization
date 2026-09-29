@@ -7,7 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .fares import load_fare
 from .geo import leg, route_geometry
+from .hooks import emit, find_load_for_order
 from .matching import notify_backhaul, select_loads_for_vehicle, vehicle_position
 from .models import RtLoad, RtLocation, RtTrip, RtTripStop, RtVehicle, utcnow
 from .optimizer import InfeasiblePlan, LoadSpec, plan_sequence
@@ -87,14 +89,15 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
         raise ServiceError(422, str(exc))
 
     geometry, _ = route_geometry([start] + [s.point for s in plan.stops])
-    # Prototype fare: every planned km x the vehicle's per-km rate.
-    fare = plan.total_distance_km * settings.rate_for(vehicle.vehicle_type, vehicle.refrigerated)
+    # Each farmer pays for their own load: road km (farm -> buyer) x tonnes x vehicle's current rate.
+    for l in loads:
+        l.estimated_fare = load_fare(vehicle, plan.direct_km[l.id], l.weight_kg)
     trip = RtTrip(
         vehicle_id=vehicle.id,
         is_backhaul=is_backhaul,
         total_distance_km=plan.total_distance_km,
         total_duration_min=plan.total_duration_min,
-        estimated_cost=round(fare),
+        estimated_cost=sum(l.estimated_fare for l in loads),
         routing_source=plan.source,
         start_lat=start[0],
         start_lng=start[1],
@@ -122,6 +125,8 @@ def plan_trip(session: Session, vehicle: RtVehicle, load_ids: list[str] | None =
         l.trip_id = trip.id
     vehicle.status = "on_trip"
     session.commit()
+    for l in loads:
+        emit(l, "assigned")
     return trip
 
 
@@ -154,6 +159,8 @@ def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
     stop.done_at = utcnow()
     load = session.get(RtLoad, stop.load_id)
     load.status = "picked_up" if stop.kind == "pickup" else "delivered"
+    if load.status == "delivered":
+        load.delivered_at = utcnow()
 
     vehicle = session.get(RtVehicle, trip.vehicle_id)
     vehicle.last_lat, vehicle.last_lng, vehicle.last_seen_at = stop.lat, stop.lng, utcnow()
@@ -167,19 +174,24 @@ def complete_stop(session: Session, trip: RtTrip, stop: RtTripStop) -> dict:
         # Truck is now empty: look for a return load right here.
         result["backhaul_options"] = notify_backhaul(session, vehicle, (stop.lat, stop.lng))
     session.commit()
+    emit(load, load.status)  # tells the main app: picked_up / delivered
     return result
 
 
 def cancel_trip(session: Session, trip: RtTrip) -> RtTrip:
     if trip.status not in ACTIVE:
         raise ServiceError(409, f"Trip is {trip.status}")
+    freed = []
     for s in trip_stops(session, trip.id):
         load = session.get(RtLoad, s.load_id)
-        if load.status == "assigned":
-            load.status, load.trip_id = "pending", None
+        if load.status == "assigned" and load not in freed:
+            load.status, load.trip_id, load.estimated_fare = "pending", None, None
+            freed.append(load)
     trip.status = "cancelled"
     session.get(RtVehicle, trip.vehicle_id).status = "available"
     session.commit()
+    for load in freed:
+        emit(load, "pending")  # back to waiting for a truck
     return trip
 
 
@@ -276,3 +288,32 @@ def tracking_snapshot(session: Session, trip: RtTrip) -> dict:
         "trail": [[p.lat, p.lng] for p in trail],
         "generated_at": now.isoformat(),
     }
+
+
+def delivery_for_order(session: Session, order_id: str, tracking_url_for=None) -> dict | None:
+    """Everything the buyer/farmer screen needs for one order, or None if the order has no delivery.
+    tracking_url_for(trip_id) -> str is optional (the router passes it)."""
+    load = find_load_for_order(session, order_id)
+    if load is None:
+        return None
+    out = {
+        "order_id": order_id,
+        "load_id": load.id,
+        "status": load.status,
+        "estimated_fare": load.estimated_fare,
+        "delivered_at": _aware(load.delivered_at).isoformat() if load.delivered_at else None,
+        "pickup": None,
+        "delivery": None,
+        "vehicle": None,
+        "tracking_url": None,
+    }
+    if load.trip_id:
+        trip = session.get(RtTrip, load.trip_id)
+        snap = tracking_snapshot(session, trip)
+        mine = [s for s in snap["stops"] if s["load_id"] == load.id]
+        out["pickup"] = next((s for s in mine if s["kind"] == "pickup"), None)
+        out["delivery"] = next((s for s in mine if s["kind"] == "drop"), None)
+        out["vehicle"] = snap["vehicle"] | {"location": snap["location"]}
+        if tracking_url_for:
+            out["tracking_url"] = tracking_url_for(trip.id) + f"?load={load.id}"
+    return out

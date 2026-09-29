@@ -19,11 +19,12 @@ import httpx
 PUNE_MARKET_YARD = (18.4870, 73.8660, "Market Yard, Gultekdi, Pune")
 VASHI_APMC = (19.0786, 73.0055, "APMC Market, Vashi, Navi Mumbai")
 
+# In the real app these come from the main app's vehicle registration (same ids).
 VEHICLES = [
     dict(driver_name="Ramesh Jadhav", driver_phone="9800000001", vehicle_number="MH14AB1234", vehicle_type="mini_truck",
-         capacity_kg=2500, base_lat=18.7606, base_lng=73.8636, base_label="Chakan"),
+         capacity_kg=2500, rate_per_ton_km=8.5, base_lat=18.7606, base_lng=73.8636, base_label="Chakan"),
     dict(driver_name="Suresh Pawar", driver_phone="9800000002", vehicle_number="MH12CD5678", vehicle_type="truck",
-         capacity_kg=6000, base_lat=18.5089, base_lng=73.9260, base_label="Hadapsar, Pune"),
+         capacity_kg=6000, rate_per_ton_km=6.0, base_lat=18.5089, base_lng=73.9260, base_label="Hadapsar, Pune"),
 ]
 
 
@@ -53,18 +54,19 @@ def main():
 
     stamp = str(int(time.time()))[-4:]  # lets you seed repeatedly without number clashes
     vehicles = []
-    for v in VEHICLES:
+    for i, v in enumerate(VEHICLES, start=1):
         v = dict(v, vehicle_number=v["vehicle_number"][:-4] + stamp)
-        r = c.post("/vehicles", json=v)
+        r = c.put(f"/vehicles/demo-vehicle-{i}-{stamp}", json=v)  # what the main backend does after registration
         r.raise_for_status()
         vehicles.append(r.json())
-        print(f"Registered {r.json()['vehicle_number']} ({v['driver_name']})")
+        print(f"Synced vehicle {r.json()['vehicle_number']} ({v['driver_name']}, Rs {v['rate_per_ton_km']}/tonne-km)")
+    order_no = iter(range(1, 100))
 
     for l in LOADS_TRUCK1:
-        r = c.post("/loads", json=l)
+        r = c.post("/loads", json=dict(l, order_id=f"DEMO-{stamp}-{next(order_no)}"))
         r.raise_for_status()
-        print(f"Load: {l['crop']:8} {l['pickup_address']:28} -> {l['drop_address']}  (notified {r.json()['vehicles_notified']} trucks)")
-    r = c.post("/loads", json=LOAD_TRUCK2)
+        print(f"Order {r.json()['order_id']}: {l['crop']:8} {l['pickup_address']:28} -> {l['drop_address']}")
+    r = c.post("/loads", json=dict(LOAD_TRUCK2, order_id=f"DEMO-{stamp}-{next(order_no)}"))
     r.raise_for_status()
     truck2_load = r.json()["id"]
 
@@ -75,6 +77,9 @@ def main():
     t1 = r.json()
     for s in t1["stops"]:
         print(f"  {s['seq']}. +{s['planned_arrival_min']:6.0f} min  {s['label']}")
+    for l in c.get("/loads", params={"status": "assigned"}).json():
+        if l["trip_id"] == t1["id"]:
+            print(f"  Fare for order {l['order_id']} ({l['weight_kg']:.0f} kg {l['crop']}): Rs {l['estimated_fare']:.0f}")
     print(f"  Total {t1['total_distance_km']} km, {t1['total_duration_min']:.0f} min, ~Rs {t1['estimated_cost']:.0f} ({t1['routing_source']})")
 
     print("\nPlanning Truck 2 (Uruli Kanchan -> Vashi)...")
@@ -84,12 +89,13 @@ def main():
     print(f"  Total {t2['total_distance_km']} km, {t2['total_duration_min']:.0f} min")
 
     for l in BACKHAUL_LOADS:  # posted after Truck 2 left, waiting near Vashi
-        c.post("/loads", json=l).raise_for_status()
+        c.post("/loads", json=dict(l, order_id=f"DEMO-{stamp}-{next(order_no)}")).raise_for_status()
     print("  2 loads are waiting near Vashi for a return truck.")
 
     print("\nOpen these live maps (farmer / buyer / judges):")
     print(f"  Truck 1: {t1['tracking_url']}")
     print(f"  Truck 2: {t2['tracking_url']}")
+    print(f"\nBuyer/farmer view of an order: {args.base_url}/orders/DEMO-{stamp}-1/delivery")
     print("\nMake the trucks move:")
     print(f"  python demo/simulate_driver.py {t1['id']} --base-url {args.base_url}")
     print(f"  python demo/simulate_driver.py {t2['id']} --base-url {args.base_url}   # ends with a return-trip offer")

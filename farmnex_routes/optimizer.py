@@ -60,6 +60,7 @@ class PlanResult:
     objective: float
     source: str  # osrm | estimate
     exact: bool
+    direct_km: dict  # load_id -> road km from its farmer straight to its buyer (used for fares)
 
 
 class InfeasiblePlan(ValueError):
@@ -192,6 +193,7 @@ def plan_sequence(
         objective=round(evaluate(best_seq), 2),
         source=source,
         exact=exact,
+        direct_km={l.load_id: round(dist[2 * k + 1][2 * k + 2], 2) for k, l in enumerate(loads)},
     )
 
 

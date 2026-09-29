@@ -10,11 +10,11 @@ from importlib import resources
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import services as svc
 from .db import get_session
+from .hooks import cancel_delivery_for_order, create_delivery_for_order, emit, upsert_vehicle
 from .matching import find_backhaul_options, notify_vehicles_about_new_load, vehicle_position
 from .models import RtLoad, RtNotification, RtTrip, RtTripStop, RtVehicle
 from .schemas import (
@@ -26,7 +26,7 @@ from .schemas import (
     PlanTripRequest,
     StopOut,
     TripOut,
-    VehicleCreate,
+    VehicleSync,
     VehicleOut,
     VehicleStatusUpdate,
 )
@@ -54,24 +54,24 @@ def _trip_out(session: Session, trip: RtTrip, request: Request) -> TripOut:
 
 
 # ---------------------------------------------------------------- vehicles
-@router.post("/vehicles", response_model=VehicleOut, status_code=201, summary="Driver registers a vehicle")
-def register_vehicle(body: VehicleCreate, session: Session = Depends(get_session)):
-    v = RtVehicle(**body.model_dump())
-    v.vehicle_number = v.vehicle_number.replace(" ", "").upper()
-    session.add(v)
-    try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        raise HTTPException(409, f"Vehicle {v.vehicle_number} is already registered")
-    return v
+@router.put(
+    "/vehicles/{vehicle_id}",
+    response_model=VehicleOut,
+    summary="Main backend: copy a vehicle from the main app (create or update)",
+)
+def sync_vehicle(vehicle_id: str, body: VehicleSync, session: Session = Depends(get_session)):
+    """Call this from the main backend right after a driver registers or edits a vehicle.
+    Use the MAIN app's vehicle id in the URL, so both systems talk about the same truck."""
+    return upsert_vehicle(session, vehicle_id, **body.model_dump())
 
 
 @router.get("/vehicles", response_model=list[VehicleOut])
-def list_vehicles(status: str | None = None, session: Session = Depends(get_session)):
+def list_vehicles(status: str | None = None, driver_user_id: str | None = None, session: Session = Depends(get_session)):
     q = select(RtVehicle).order_by(RtVehicle.created_at)
     if status:
         q = q.where(RtVehicle.status == status)
+    if driver_user_id:
+        q = q.where(RtVehicle.driver_user_id == driver_user_id)
     return session.scalars(q).all()
 
 
@@ -139,15 +139,23 @@ def mark_read(notification_id: str, session: Session = Depends(get_session)):
 
 
 # ---------------------------------------------------------------- loads
-@router.post("/loads", response_model=LoadCreated, status_code=201, summary="Create a shipment (farmer -> wholesaler)")
+@router.post("/loads", response_model=LoadCreated, status_code=201, summary="Create a delivery (farmer -> buyer)")
 def create_load(body: LoadCreate, session: Session = Depends(get_session)):
-    load = RtLoad(**body.model_dump())
-    session.add(load)
-    session.flush()
-    notified = notify_vehicles_about_new_load(session, load)
-    session.commit()
+    """If order_id is given and that order already has a delivery, the existing one is returned
+    (so calling this twice by mistake never creates two deliveries)."""
+    data = body.model_dump()
+    if body.order_id:
+        load, created = create_delivery_for_order(session, **data)
+    else:
+        data.pop("order_id")
+        load = RtLoad(**data)
+        session.add(load)
+        session.flush()
+        notify_vehicles_about_new_load(session, load)
+        session.commit()
+        created = True
     out = LoadCreated.model_validate(load)
-    out.vehicles_notified = notified
+    out.already_existed = not created
     return out
 
 
@@ -175,6 +183,29 @@ def cancel_load(load_id: str, session: Session = Depends(get_session)):
         raise HTTPException(409, f"Only pending loads can be cancelled (this one is {load.status})")
     load.status = "cancelled"
     session.commit()
+    emit(load, "cancelled")
+    return load
+
+
+# ---------------------------------------------------------------- orders (main app ids)
+@router.get("/orders/{order_id}/delivery", summary="Buyer / farmer: where is my order?")
+def order_delivery(order_id: str, request: Request, session: Session = Depends(get_session)):
+    info = svc.delivery_for_order(
+        session, order_id, tracking_url_for=lambda tid: str(request.url_for("tracking_view", trip_id=tid))
+    )
+    if info is None:
+        raise HTTPException(404, f"Order {order_id} has no delivery")
+    return info
+
+
+@router.post("/orders/{order_id}/cancel-delivery", response_model=LoadOut)
+def order_cancel_delivery(order_id: str, session: Session = Depends(get_session)):
+    try:
+        load = cancel_delivery_for_order(session, order_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    if load is None:
+        raise HTTPException(404, f"Order {order_id} has no delivery")
     return load
 
 

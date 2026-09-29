@@ -51,8 +51,11 @@ class Settings:
     # Tracking.
     gps_stale_seconds: int
 
-    # Placeholder fares in Rs per km, by vehicle type. Replace with real rates.
-    rate_per_km: dict = field(default_factory=dict)
+    # Fares. The main app sends each vehicle's CURRENT rate (Rs per tonne per km) when it
+    # syncs the vehicle. These defaults are only used if it doesn't.
+    default_rate_per_ton_km: dict = field(default_factory=dict)
+    reefer_multiplier: float = 1.4
+    min_fare: float = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,19 +79,15 @@ class Settings:
             exact_max_stops=_int("EXACT_MAX_STOPS", 10),
             priority_weight=_float("PRIORITY_WEIGHT", 0.15),
             gps_stale_seconds=_int("GPS_STALE_SECONDS", 120),
-            rate_per_km={
-                "pickup": _float("RATE_PICKUP", 18),
-                "tempo": _float("RATE_TEMPO", 22),
-                "mini_truck": _float("RATE_MINI_TRUCK", 28),
-                "truck": _float("RATE_TRUCK", 38),
-                "reefer": _float("RATE_REEFER", 50),
+            default_rate_per_ton_km={
+                "pickup": _float("DEFAULT_RATE_PICKUP", 12),
+                "tempo": _float("DEFAULT_RATE_TEMPO", 10),
+                "mini_truck": _float("DEFAULT_RATE_MINI_TRUCK", 8),
+                "truck": _float("DEFAULT_RATE_TRUCK", 6),
             },
+            reefer_multiplier=_float("REEFER_MULTIPLIER", 1.4),
+            min_fare=_float("MIN_FARE", 300),
         )
-
-    def rate_for(self, vehicle_type: str, refrigerated: bool = False) -> float:
-        if refrigerated:
-            return self.rate_per_km["reefer"]
-        return self.rate_per_km.get(vehicle_type, self.rate_per_km["tempo"])
 
 
 settings = Settings.from_env()
