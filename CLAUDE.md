@@ -4,7 +4,8 @@ Guidance for Claude Code sessions working in this repo.
 
 ## What this is
 A plug-in component (Python package `farmnex_routes`) for the FarmNex SIH 2026 app. It is
-mounted into the main FastAPI backend as a router (`app.include_router(router, prefix="/routes")`)
+mounted into the main FastAPI backend as a router (standalone demo: `prefix="/routes"`; in FarmNex the
+host mounts it at `/api/v2/routes` from its `backend/app/modules/routes_host.py`)
 and shares the main Supabase Postgres database.
 
 It does: route optimization for pickups (farmers) and drops (wholesalers), load pooling,
@@ -21,7 +22,8 @@ user id. It has no vehicles table — `rt_vehicles` is the source of truth, fill
 via `upsert_vehicle`. Keep route paths and helper signatures stable (the host's guard matches on
 path parameter names like `{vehicle_id}`, `{trip_id}`, `{load_id}`, `{order_id}`,
 `{notification_id}`); if you add or rename a route, note it in the README so the host can add a
-guard rule. Full host guide: `docs/integration/route-optimizer.md` in farmnex_main.
+guard rule. The host adds this package to its `backend/pyproject.toml` (what FastAPI Cloud installs)
+and `requirements.txt`, pinned to a commit. Full host guide: `docs/integration/route-optimizer.md` in farmnex_main.
 
 ## Hard rules
 - Only create tables prefixed `rt_`. Never alter, drop or query main-app tables.
